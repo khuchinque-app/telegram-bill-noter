@@ -1,11 +1,29 @@
 import importlib
 import pkgutil
-import inspect
-from typing import Dict, Any, Type
+from typing import Any, Dict, List
 import logging
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_frontmatter(path: Path):
+    """Parse `name:` / `description:` from a SKILL.md YAML frontmatter block."""
+    name, description = "", ""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return name, description
+    if not text.startswith("---"):
+        return name, description
+    body = text.split("---", 2)[1] if text.count("---") >= 2 else ""
+    for line in body.splitlines():
+        if line.startswith("name:") and not name:
+            name = line.split(":", 1)[1].strip()
+        elif line.startswith("description:") and not description:
+            description = line.split(":", 1)[1].strip()
+    return name, description
+
 
 class SkillRegistry:
     def __init__(self, skills_dir: str = None):
@@ -24,9 +42,32 @@ class SkillRegistry:
                     if hasattr(module, "skill_info"):
                         self.skills[name] = module.skill_info
                         self.skills[name]["module"] = module
+                        # Surface progressive-disclosure skill sets.
+                        self.skills[name]["units"] = self.discover_skill_units(name)
                         logger.info(f"Discovered skill: {name}")
                 except Exception as e:
                     logger.error(f"Failed to load skill {name}: {e}")
+
+    def discover_skill_units(self, parent: str) -> List[Dict[str, Any]]:
+        """Discover progressive-disclosure SKILL.md units under a skill dir.
+
+        Walks `skills/<parent>/skills/**` for SKILL.md files and parses their
+        frontmatter so the registry can list every skill set a skill ships.
+        """
+        units = []
+        base = self.skills_dir / parent / "skills"
+        if not base.is_dir():
+            return units
+        for skill_md in sorted(base.rglob("SKILL.md")):
+            name, description = _parse_frontmatter(skill_md)
+            if not name:
+                continue
+            units.append({
+                "name": name,
+                "description": description,
+                "path": str(skill_md.relative_to(self.skills_dir)),
+            })
+        return units
 
     def load(self, skill_name: str) -> Any:
         """Loads a specific skill by name."""

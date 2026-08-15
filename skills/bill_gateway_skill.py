@@ -7,12 +7,9 @@ Features:
   • Checkmark format with timestamps and itemization
 """
 
-import asyncio
 import logging
 import os
-import re
 from datetime import datetime, timezone
-from typing import Optional
 
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -170,7 +167,11 @@ class BillGatewaySkill:
             response = result.get("response", "")
             if response:
                 await progress_msg.edit_text(response, parse_mode="Markdown")
-                log.info("PHOTO BILL finalized: bill_id=%s", result.get("bill_id"))
+                if result.get("bill_id"):
+                    log.info("PHOTO BILL finalized: bill_id=%s", result.get("bill_id"))
+            elif result.get("skipped"):
+                # Photo handled above with a helpful message; nothing to do.
+                log.info("PHOTO BILL skipped: %s", result.get("skipped"))
             else:
                 await progress_msg.edit_text(
                     "✅ *Bill Image Captured & Stored!*\n"

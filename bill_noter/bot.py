@@ -10,12 +10,8 @@ Extended with flow-nexus-swarm + ruflo skills for:
   • Goal-oriented execution and self-optimization
 """
 
-import asyncio
 import logging
 import os
-import re
-from datetime import datetime
-from typing import List
 
 from telegram import Update
 from telegram.ext import (

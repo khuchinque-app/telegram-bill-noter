@@ -1,3 +1,12 @@
 # Bill Noter bot — dependencies (separate from the main payment bot)
 # Uses python-telegram-bot, which does NOT conflict with pyrotgfork.
+
+# Core bot
 python-telegram-bot>=20.0
+
+# Receipt photo OCR (bill_noter photo capture)
+pytesseract>=0.3.10
+Pillow>=9.0
+
+# Optional: historical catch-up via user session (hunger_catchup.py)
+# pyrogram>=2.0

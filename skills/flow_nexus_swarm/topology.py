@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import List, Any
+from typing import List
 import logging
 from .agents import BaseAgent
 

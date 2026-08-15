@@ -8,20 +8,15 @@ This script provides two hunger solutions:
 2. JSON/Chat Export Ingester: Ingests exported Telegram chat history JSON files directly into the Swarm DB.
 """
 
-import asyncio
 import json
 import logging
-import os
 import sys
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from skills.flow_nexus_swarm.shared_memory import AgentDB
-from skills.flow_nexus_swarm.agents import BillCollectorAgent, BillParserAgent, BillStorageAgent
-from gateway.bill_detector import analyze
 from gateway.ocr import ocr_text
 from bill_noter.price_parser import parse_prices, extract_label
 

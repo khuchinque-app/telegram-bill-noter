@@ -6,12 +6,10 @@ Pipeline:
 Equipped with animated progress bar indicators for realistic Telegram processing.
 """
 
-import asyncio
 import logging
 from typing import Any, Dict, Optional
 
 from .agents import (
-    BaseAgent,
     BillCollectorAgent,
     BillParserAgent,
     BillResponderAgent,
@@ -85,8 +83,20 @@ class SwarmOrchestrator:
 
             data = await self.parser.process(data)
 
-            # If plain conversation with no numbers and not a photo, let conversational handler take over
-            if not data.get("parsed") and not data.get("has_photo"):
+            # Nothing parseable: skip storage entirely.
+            #   • plain conversation → let the conversational handler take over
+            #   • photo with no OCR price → do NOT store a $0.00 bill
+            if not data.get("parsed"):
+                if data.get("has_photo"):
+                    log.info("HUNGER ORCHESTRATOR skip — photo with no detectable amount")
+                    return {
+                        "response": (
+                            "🤔 *No bill amount detected in the photo.*\n\n"
+                            "Try a clearer shot of the total, or type the amount "
+                            "in a message like `GrabFood lunch 35.50 USD`."
+                        ),
+                        "skipped": True,
+                    }
                 log.info("HUNGER ORCHESTRATOR skip — no price detected")
                 return {"response": "", "skipped": True}
 

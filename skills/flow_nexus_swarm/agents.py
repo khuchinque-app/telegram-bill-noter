@@ -7,9 +7,8 @@ and logging to SharedMemory (AgentDB).
 
 import json
 import logging
-import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from .shared_memory import AgentDB
 from gateway.ocr import ocr_text
@@ -160,10 +159,14 @@ class BillParserAgent(BaseAgent):
             else:
                 total = sum(p.value for p in prices)
 
-            text_for_label = data.get("text") or (prices[0].raw if prices else "")
-            extracted = extract_label(text_for_label, prices)
-            if extracted and extracted != "untitled":
-                label = extracted
+            # NOTE: price spans were computed against `combined` (caption + OCR).
+            # Only extract a label when there is no OCR text, otherwise the spans
+            # would be applied to a different-length string and garble the label.
+            if not data.get("ocr_text"):
+                text_for_label = data.get("text") or ""
+                extracted = extract_label(text_for_label, prices)
+                if extracted and extracted != "untitled":
+                    label = extracted
         elif data.get("has_photo"):
             label = f"{label} (Receipt Image)"
 
