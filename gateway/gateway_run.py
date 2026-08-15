@@ -4,6 +4,13 @@ Usage:
   python gateway/gateway_run.py --self-test            # offline proof (no Telegram)
   python gateway/gateway_run.py                        # live user-session scan
   python gateway/gateway_run.py --mode bot --token TOKEN   # live bot listener
+  python gateway/gateway_run.py --standby              # ALWAYS-ON bot listener
+                                                       # (token from --token, BILL_NOTER_TOKEN, or .env)
+
+Standby mode is the production way to run the gateway: it listens
+continuously, stores every fresh bill into the shared AgentDB
+(dedup-guarded), and replies in-chat. Pair it with `heal.py` so it
+never stays down.
 
 Credentials (user mode) come from app/conf/config.ini [pyrogram] or the
 environment: TG_API_ID, TG_API_HASH, TG_SESSION.
@@ -12,6 +19,7 @@ environment: TG_API_ID, TG_API_HASH, TG_SESSION.
 import argparse
 import configparser
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -78,8 +86,21 @@ def load_user_config():
 
 
 def os_env(name: str) -> str:
-    import os
     return os.environ.get(name, "")
+
+
+def _load_env_file(path: str = ".env") -> None:
+    """Minimal .env loader (no extra dependency), matching bill_noter/bot.py."""
+    p = Path(path)
+    if not p.exists():
+        return
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        key, val = key.strip(), val.strip().strip('"').strip("'")
+        os.environ.setdefault(key, val)
 
 
 # Default practice chat the AUTOBOT targets in sandbox mode.
@@ -93,6 +114,8 @@ def main() -> int:
                     help="run against the in-repo sandbox (no Telegram)")
     ap.add_argument("--mode", choices=["user", "bot"], default="user")
     ap.add_argument("--token", default="", help="bot token (bot mode)")
+    ap.add_argument("--standby", action="store_true",
+                    help="ALWAYS-ON bot listener: consume+store incoming bills")
     ap.add_argument("--chat", type=int, default=None,
                     help="scan ONLY this chat id (e.g. pencatatbill2)")
     ap.add_argument("--autobot", action="store_true",
@@ -106,6 +129,8 @@ def main() -> int:
     logging.basicConfig(
         format="%(asctime)s [%(levelname)s] %(message)s", level=logging.INFO
     )
+
+    _load_env_file()
 
     if args.self_test:
         return self_test(args.state)
@@ -131,10 +156,23 @@ def main() -> int:
             gw.run_sandbox(client_factory(), chat_id=chat)
         return 0
 
+    if args.standby:
+        token = args.token or os_env("BILL_NOTER_TOKEN") or os_env("GATEWAY_TOKEN")
+        if not token:
+            raise SystemExit(
+                "standby mode needs a bot token — set BILL_NOTER_TOKEN in .env "
+                "or pass --token"
+            )
+        log = logging.getLogger("gateway")
+        log.info("GATEWAY STANDBY engaged — always listening & consuming bills")
+        TelegramGateway(state_path=args.state).run_bot(token)
+        return 0
+
     if args.mode == "bot":
-        if not args.token:
-            raise SystemExit("--token required for bot mode")
-        TelegramGateway(state_path=args.state).run_bot(args.token)
+        token = args.token or os_env("BILL_NOTER_TOKEN") or os_env("GATEWAY_TOKEN")
+        if not token:
+            raise SystemExit("--token (or BILL_NOTER_TOKEN) required for bot mode")
+        TelegramGateway(state_path=args.state).run_bot(token)
         return 0
 
     api_id, api_hash, session = load_user_config()

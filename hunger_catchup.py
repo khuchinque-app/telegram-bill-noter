@@ -16,7 +16,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from skills.flow_nexus_swarm.shared_memory import AgentDB
+from skills.flow_nexus_swarm.shared_memory import AgentDB, DuplicateBillError
 from gateway.ocr import ocr_text
 from bill_noter.price_parser import parse_prices, extract_label
 
@@ -83,19 +83,23 @@ class HungerHistoryScanner:
                         label = extract_label(text, prices) or "Historical Bill"
                         author_name = getattr(msg.from_user, "first_name", "Member") if msg.from_user else "Member"
 
-                        bill_id = self.db.save_bill(
-                            chat_id=cid,
-                            message_id=msg.id,
-                            author_id=getattr(msg.from_user, "id", 0) if msg.from_user else 0,
-                            author_name=author_name,
-                            bill_type="historical_bill",
-                            source="telegram_history",
-                            label=label,
-                            amount=max_p.value,
-                            currency=max_p.currency or "USD",
-                            raw_text=text,
-                            image_path=photo_path,
-                        )
+                        try:
+                            bill_id = self.db.save_bill(
+                                chat_id=cid,
+                                message_id=msg.id,
+                                author_id=getattr(msg.from_user, "id", 0) if msg.from_user else 0,
+                                author_name=author_name,
+                                bill_type="historical_bill",
+                                source="telegram_history",
+                                label=label,
+                                amount=max_p.value,
+                                currency=max_p.currency or "USD",
+                                raw_text=text,
+                                image_path=photo_path,
+                            )
+                        except DuplicateBillError as exc:
+                            log.info("⏭️ SKIP duplicate historical bill %s: %s", label, exc)
+                            continue
                         self.db.update_bill_status(bill_id, "confirmed")
                         found_count += 1
                         log.info("🔥 RECOVERED PAST BILL #%d: %s -> %.2f %s",
@@ -136,19 +140,23 @@ class HungerHistoryScanner:
                 mid = m.get("id", 0)
                 author = m.get("from", "Export User")
 
-                bill_id = self.db.save_bill(
-                    chat_id=chat_id or data.get("id", 0),
-                    message_id=mid,
-                    author_id=0,
-                    author_name=author,
-                    bill_type="exported_bill",
-                    source="telegram_export",
-                    label=label,
-                    amount=max_p.value,
-                    currency=max_p.currency or "USD",
-                    raw_text=raw_text,
-                    image_path=m.get("photo", None),
-                )
+                try:
+                    bill_id = self.db.save_bill(
+                        chat_id=chat_id or data.get("id", 0),
+                        message_id=mid,
+                        author_id=0,
+                        author_name=author,
+                        bill_type="exported_bill",
+                        source="telegram_export",
+                        label=label,
+                        amount=max_p.value,
+                        currency=max_p.currency or "USD",
+                        raw_text=raw_text,
+                        image_path=m.get("photo", None),
+                    )
+                except DuplicateBillError as exc:
+                    log.info("⏭️ SKIP duplicate export msg %s: %s", mid, exc)
+                    continue
                 self.db.update_bill_status(bill_id, "confirmed")
                 recovered += 1
 

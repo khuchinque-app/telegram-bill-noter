@@ -17,6 +17,8 @@
 - **🧠 Ruflo Skill Sets** — 7 progressive-disclosure skill units across orchestration, memory, and analysis (see [Skills](#skills)).
 - **🗄️ SQLite Shared Memory (`AgentDB`)** — Thread-safe persistent database for bills, audit logs, and agent states.
 - **🔄 Late-Added Catch-Up Scanner (`hunger_catchup.py`)** — Ingests historical chat exports or connects via user session (MTProto) to capture past receipts missed before the bot joined.
+- **🚫 Duplicate Rejection** — identical data fed twice (re-sent bill, re-run export, or bot+gateway both consuming) is **rejected** with a `⚠️ Duplicate Rejected` reply; nothing is ever stored twice.
+- **🔌 Gateway Always-Standby** — `gateway_run.py --standby` listens 24/7, consumes incoming bills into shared memory (dedup-guarded), and pairs with `heal.py` for auto-restart.
 
 ---
 
@@ -158,8 +160,8 @@ telegram-bill-noter/
 └── gateway/                         # Gateway scanner & OCR utilities
     ├── bill_detector.py
     ├── checkpoint.py
-    ├── gateway.py
-    ├── gateway_run.py               # Offline sandbox / live scanner entry point
+    ├── gateway.py                   # Always-standby consumer (dedup-guarded)
+    ├── gateway_run.py               # Entry: --standby / sandbox / user-mode
     ├── ocr.py                       # Tesseract OCR engine wrapper
     └── sandbox.py                   # Offline testing sandbox
 ```
@@ -217,6 +219,51 @@ python bill_noter_bot.py --dry-run       # read messages from stdin, print notes
 ### 🎨 Emote language
 
 All bot replies use a fixed emoji vocabulary — see [`docs/EMOTES.md`](docs/EMOTES.md).
+
+---
+
+## 🚫 Duplicate Protection
+
+Every bill gets a **content fingerprint** (chat, author, label, amount,
+currency, raw text) at the storage layer. If the same data arrives again
+— a re-sent message, re-running `hunger_catchup.py` on the same export,
+or the bot and gateway both consuming the same bill — the second feed
+is **rejected** and the chat gets:
+
+```
+⚠️ *Duplicate Rejected!*
+🔁 This bill was *already recorded* as `#42`.
+📋 *Item:* Lunch
+💰 *Amount:* 35.50 USD
+🧹 No new entry was created — nothing duplicated.
+```
+
+- Enforced in **SQLite** (`AgentDB.save_bill` raises `DuplicateBillError`;
+  unique index on the fingerprint) and in the legacy JSON store
+  (`NotesStore.add` returns `False`).
+- Existing databases are **auto-migrated**: the fingerprint column is
+  added and old rows backfilled, so re-feeding old data is rejected too.
+- The catch-up scanner skips duplicates instead of counting them twice.
+
+## 🔌 Gateway Always-Standby
+
+The gateway runs as an **always-on consumer** — it doesn't just watch,
+it stores every fresh bill into the shared `AgentDB`:
+
+```bash
+python gateway/gateway_run.py --standby        # token from --token, BILL_NOTER_TOKEN, or .env
+```
+
+It is dedup-guarded, so running it *alongside* the bot is safe — the
+first consumer wins, the other gets `⚠️ Duplicate Rejected`.
+
+For 24/7 operation, let `heal.py` supervise it (it auto-selects the
+standby mode when a token is configured):
+
+```bash
+python heal.py --all        # bot + gateway (gateway needs BILL_NOTER_TOKEN in .env)
+python heal.py --gateway    # gateway only
+```
 
 ---
 
@@ -284,6 +331,7 @@ For programmatic history scraping via a user session (MTProto), use
 
 - **Self-test parsing:** `python bill_noter_bot.py --self-test`
 - **Gateway offline sandbox:** `python gateway/gateway_run.py --self-test`
+- **Gateway always-standby:** `python gateway/gateway_run.py --standby`
 - **Audit code:** `python -m skills.ruflo.code_analyzer --path .`
 - **Scaffold a skill:** `python -m skills.ruflo.skill_builder --name <skill> --description "<what + when>"`
 - **Bot-mode live listener:** `python gateway/gateway_run.py --mode bot --token <TOKEN>`

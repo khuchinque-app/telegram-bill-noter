@@ -262,12 +262,28 @@ class Supervisor:
 # ──────────────────────────────────────────────────────────────────────
 
 def _services(args: argparse.Namespace) -> List[Service]:
+    """Build the service list.
+
+    The gateway runs in --standby (always-on bot listener) so it
+    consumes incoming bills 24/7; it needs a token, which the supervisor
+    inherits from the environment / .env via the Service env dict.
+    """
     py = sys.executable
     services: List[Service] = []
     if args.bot or args.all:
         services.append(Service("bot", [py, "bill_noter_bot.py"]))
     if args.gateway or args.all:
-        services.append(Service("gateway", [py, "gateway/gateway_run.py"]))
+        token = os.environ.get("BILL_NOTER_TOKEN") or os.environ.get("GATEWAY_TOKEN")
+        if not token:
+            log.warning(
+                "gateway service skipped — set BILL_NOTER_TOKEN (or GATEWAY_TOKEN) "
+                "in .env to enable the always-on gateway listener"
+            )
+        else:
+            services.append(Service(
+                "gateway",
+                [py, "gateway/gateway_run.py", "--standby"],
+            ))
     if not services:
         raise SystemExit("nothing to supervise — use --bot, --gateway, or --all")
     return services

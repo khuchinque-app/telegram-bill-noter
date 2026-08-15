@@ -108,7 +108,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             currency=price.currency,
             raw=text,
         )
-        store.add(note)
+        added = store.add(note)
+        if not added:
+            await msg.reply_text(
+                f"⚠️ *Duplicate Rejected:* `{label}` {_fmt(price.value, price.currency)} "
+                "was already recorded — nothing duplicated.",
+                parse_mode="Markdown",
+            )
+            log.info("ACTION rejected duplicate id=%s label=%r", msg.id, label)
+            continue
         confirmation = (
             f"✅ *Noted:* {label}\n"
             f"💰 {_fmt(price.value, price.currency)}\n"

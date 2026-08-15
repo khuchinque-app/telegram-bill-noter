@@ -163,6 +163,8 @@ class TelegramGateway:
     # Live: bot listener (chats the bot is in)
     # ------------------------------------------------------------------ #
     async def _bot_on_message(self, client, message) -> None:
+        """Always-standby consumer: store fresh bills into AgentDB (dedup
+        guarded) and reply, so the gateway consumes — not just watches."""
         a = analyze(message)
         chat_id = a.chat_id
         cp = self.checkpoint.get(chat_id)
@@ -170,14 +172,50 @@ class TelegramGateway:
             log.info("FRESH BILL in %s: %s %s",
                      getattr(message.chat, "title", chat_id), a.label, a.prices)
             try:
+                await self._store_bill(a, message)
                 await message.reply_text(
                     f"💰 Noted: {a.label} — {', '.join(a.prices)}"
                 )
             except Exception as exc:
-                log.warning("reply failed: %s", exc)
+                log.warning("gateway consume failed: %s", exc)
         elif a.is_bill_candidate:
             log.info("candidate bill photo in %s (OCR needed)", chat_id)
         self.checkpoint.update(chat_id, a.message_id, a.date)
+
+    async def _store_bill(self, a, message) -> None:
+        """Persist a consumed bill into the shared AgentDB with dedup."""
+        from skills.flow_nexus_swarm.shared_memory import (
+            AgentDB, DuplicateBillError,
+        )
+
+        db = AgentDB()
+        author = getattr(getattr(message, "from_user", None), "first_name", "") or ""
+        # Reuse the same price parser the swarm uses so currency/thousands
+        # separators are handled identically everywhere.
+        from bill_noter.price_parser import parse_prices
+        prices = parse_prices(a.raw)
+        max_p = max(prices, key=lambda p: p.value) if prices else None
+        try:
+            db.save_bill(
+                chat_id=a.chat_id,
+                message_id=a.message_id,
+                author_id=getattr(getattr(message, "from_user", None), "id", 0) or 0,
+                author_name=author or "Member",
+                bill_type="local_bill",
+                source="gateway",
+                label=a.label or "Bill",
+                amount=max_p.value if max_p else 0.0,
+                currency=max_p.currency if max_p else "",
+                raw_text=a.raw,
+            )
+        except DuplicateBillError as exc:
+            log.info("GATEWAY duplicate rejected: %s", exc)
+            try:
+                await message.reply_text(
+                    f"⚠️ *Duplicate Rejected:* already recorded as `#{exc.existing_id}`."
+                )
+            except Exception:
+                pass
 
     def run_bot(self, bot_token: str) -> None:
         from pyrogram import Client

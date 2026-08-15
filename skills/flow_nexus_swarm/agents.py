@@ -10,7 +10,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-from .shared_memory import AgentDB
+from .shared_memory import AgentDB, DuplicateBillError
 from gateway.ocr import ocr_text
 
 log = logging.getLogger("swarm.agents")
@@ -186,25 +186,45 @@ class BillParserAgent(BaseAgent):
 
 
 class BillStorageAgent(BaseAgent):
-    """Hunger Storage: Persists every piece of parsed data into SQLite AgentDB."""
+    """Hunger Storage: Persists every piece of parsed data into SQLite AgentDB.
+
+    Deduplication: identical data fed again (re-sent message, re-run
+    export, gateway+bot both consuming) raises DuplicateBillError here;
+    the agent flags the pipeline so the responder can reject instead of
+    confirming a second copy.
+    """
 
     name = "BillStorage"
-    role = "Store bill into SQLite shared memory"
+    role = "Store bill into SQLite shared memory (dedup-guarded)"
 
     async def process(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        bill_id = self.db.save_bill(
-            chat_id=data.get("chat_id", 0),
-            message_id=data.get("message_id", 0),
-            author_id=data.get("author_id", 0),
-            author_name=data.get("author_name", ""),
-            bill_type=data.get("bill_type", "generic"),
-            source=data.get("source", "telegram"),
-            label=data.get("label", ""),
-            amount=data.get("total", 0.0),
-            currency=data.get("currency", ""),
-            raw_text=data.get("combined_text", "") or data.get("text", ""),
-            image_path=data.get("image_path", None),
-        )
+        try:
+            bill_id = self.db.save_bill(
+                chat_id=data.get("chat_id", 0),
+                message_id=data.get("message_id", 0),
+                author_id=data.get("author_id", 0),
+                author_name=data.get("author_name", ""),
+                bill_type=data.get("bill_type", "generic"),
+                source=data.get("source", "telegram"),
+                label=data.get("label", ""),
+                amount=data.get("total", 0.0),
+                currency=data.get("currency", ""),
+                raw_text=data.get("combined_text", "") or data.get("text", ""),
+                image_path=data.get("image_path", None),
+            )
+        except DuplicateBillError as exc:
+            log.info("HUNGER STORE rejected duplicate: %s", exc)
+            self._log("store", {"label": data.get("label")},
+                      {"duplicate": True, "existing_id": exc.existing_id},
+                      success=False, error=str(exc))
+            return {
+                **data,
+                "bill_id": exc.existing_id,
+                "stored": False,
+                "duplicate": True,
+                "existing_bill_id": exc.existing_id,
+            }
+
         self.db.update_bill_status(bill_id, "confirmed")
 
         result = {
@@ -240,6 +260,22 @@ class BillResponderAgent(BaseAgent):
         has_photo = data.get("has_photo", False)
         bill_type = data.get("bill_type", "")
         ocr_text_data = data.get("ocr_text", "")
+
+        # Duplicate guard: identical data was already consumed — reject it.
+        if data.get("duplicate"):
+            existing_id = data.get("existing_bill_id")
+            response = (
+                "⚠️ *Duplicate Rejected!*\n"
+                f"🔁 This bill was *already recorded* as `#{existing_id}`.\n"
+                f"📋 *Item:* {label}\n"
+                f"💰 *Amount:* {self._fmt_amount(total, currency)}\n"
+                "🧹 No new entry was created — nothing duplicated."
+            )
+            result = {**data, "response": response, "duplicate": True}
+            log.info("HUNGER RESPOND duplicate rejected (existing_id=%s)", existing_id)
+            self._log("respond", {"duplicate": True}, {"existing_id": existing_id},
+                      success=False, error="duplicate_rejected")
+            return result
 
         lines = [
             "✅ *Bill Noted & Saved!*",

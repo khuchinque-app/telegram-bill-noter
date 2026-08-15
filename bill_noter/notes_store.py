@@ -1,6 +1,8 @@
-"""JSON-backed store for bill/price notes."""
+"""JSON-backed store for bill/price notes (deduplicated)."""
 
+import hashlib
 import json
+import re
 import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -22,8 +24,24 @@ class Note:
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
+def _fingerprint(note: Note) -> str:
+    """Content hash matching the AgentDB dedup semantics."""
+    def norm(value: str) -> str:
+        return re.sub(r"\s+", " ", (value or "").strip().lower())
+
+    key = "|".join([
+        str(note.chat_id),
+        str(note.author_id),
+        norm(note.label),
+        f"{float(note.value or 0):.2f}",
+        norm(note.currency),
+        norm(note.raw),
+    ])
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
 class NotesStore:
-    """Append-only JSON store of notes, keyed by chat id."""
+    """JSON store of notes, keyed by chat id — rejects duplicates."""
 
     def __init__(self, path: str = "notes.json") -> None:
         self._path = Path(path)
@@ -43,10 +61,18 @@ class NotesStore:
             json.dumps(self._data, indent=2, ensure_ascii=False), encoding="utf-8"
         )
 
-    def add(self, note: Note) -> None:
+    def add(self, note: Note) -> bool:
+        """Store a note. Returns True if stored, False if it was a duplicate."""
+        fp = _fingerprint(note)
         with self._lock:
-            self._data.setdefault(str(note.chat_id), []).append(asdict(note))
+            rows = self._data.setdefault(str(note.chat_id), [])
+            if any(r.get("fingerprint") == fp for r in rows):
+                return False
+            entry = asdict(note)
+            entry["fingerprint"] = fp
+            rows.append(entry)
             self._save()
+            return True
 
     def recent(self, chat_id: int, limit: int = 10) -> List[Note]:
         rows = self._data.get(str(chat_id), [])[-limit:]

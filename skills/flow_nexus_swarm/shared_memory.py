@@ -2,16 +2,69 @@
 
 Stores bills, agent state, and action logs.  Thread-safe via per-thread
 connections.  The database is created automatically at first use.
+
+Deduplication: every bill gets a content fingerprint (chat, author,
+label, amount, currency, raw text). If identical data is fed again — a
+re-sent message, a re-run of hunger_catchup on the same export, or the
+gateway and bot both consuming the same bill — `save_bill` raises
+`DuplicateBillError` and nothing is stored twice.
 """
 
+import hashlib
 import json
 import logging
+import re
 import sqlite3
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 log = logging.getLogger("swarm.memory")
+
+
+class DuplicateBillError(Exception):
+    """Raised when identical bill data is fed in again.
+
+    Attributes
+    ----------
+    existing_id : int
+        The id of the bill already stored with the same fingerprint.
+    """
+
+    def __init__(self, existing_id: int, fingerprint: str) -> None:
+        self.existing_id = existing_id
+        self.fingerprint = fingerprint
+        super().__init__(
+            f"duplicate bill rejected — already stored as #{existing_id}"
+        )
+
+
+def bill_fingerprint(
+    chat_id: int,
+    author_id: int,
+    label: str,
+    amount: float,
+    currency: str,
+    raw_text: str,
+) -> str:
+    """Stable content hash — identical data always yields the same key.
+
+    Normalization: lower-case, whitespace collapsed, amount rounded to
+    two decimals, currency uppercased. Two feeds of the same bill (same
+    chat, author, label, amount, currency, raw text) collide on purpose.
+    """
+    def norm(value: str) -> str:
+        return re.sub(r"\s+", " ", (value or "").strip().lower())
+
+    key = "|".join([
+        str(chat_id),
+        str(author_id),
+        norm(label),
+        f"{float(amount or 0):.2f}",
+        norm(currency),
+        norm(raw_text),
+    ])
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
 class AgentDB:
@@ -59,6 +112,7 @@ class AgentDB:
                 currency    TEXT,
                 raw_text    TEXT,
                 image_path  TEXT,
+                fingerprint TEXT,
                 status      TEXT DEFAULT 'pending',
                 created_at  TEXT DEFAULT (datetime('now')),
                 confirmed_at TEXT
@@ -83,7 +137,45 @@ class AgentDB:
                 created_at  TEXT DEFAULT (datetime('now'))
             );
         """)
+        self._migrate_bills(conn)
         conn.commit()
+
+    def _migrate_bills(self, conn: sqlite3.Connection) -> None:
+        """Add the fingerprint column + unique index to pre-existing DBs."""
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(bills)")}
+        if "fingerprint" not in cols:
+            conn.execute("ALTER TABLE bills ADD COLUMN fingerprint TEXT")
+            log.info("AgentDB migration: added bills.fingerprint")
+
+        # Backfill fingerprints for rows stored before dedup existed, so
+        # re-feeding old data is rejected too.
+        rows = conn.execute(
+            "SELECT id, chat_id, author_id, label, amount, currency, raw_text "
+            "FROM bills WHERE fingerprint IS NULL"
+        ).fetchall()
+        for r in rows:
+            fp = bill_fingerprint(
+                chat_id=r["chat_id"] or 0,
+                author_id=r["author_id"] or 0,
+                label=r["label"] or "",
+                amount=r["amount"] or 0,
+                currency=r["currency"] or "",
+                raw_text=r["raw_text"] or "",
+            )
+            conn.execute("UPDATE bills SET fingerprint = ? WHERE id = ?", (fp, r["id"]))
+        if rows:
+            log.info("AgentDB migration: backfilled %d fingerprints", len(rows))
+
+        # Unique index enforces dedup at the database level too. If a
+        # pre-existing DB already contains true duplicates the index
+        # creation fails — the Python check still protects new inserts.
+        try:
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_bills_fingerprint "
+                "ON bills(fingerprint)"
+            )
+        except sqlite3.IntegrityError as exc:
+            log.warning("could not create unique index (pre-existing duplicates?): %s", exc)
 
     # ── bills ─────────────────────────────────────────────────────────────
 
@@ -101,14 +193,29 @@ class AgentDB:
         raw_text: str,
         image_path: Optional[str] = None,
     ) -> int:
+        """Store a bill, rejecting identical data that was already consumed.
+
+        Raises DuplicateBillError when a bill with the same content
+        fingerprint already exists — the caller should report this as a
+        rejection instead of storing it.
+        """
+        fp = bill_fingerprint(chat_id, author_id, label, amount, currency, raw_text)
+        existing = self._conn().execute(
+            "SELECT id FROM bills WHERE fingerprint = ?", (fp,)
+        ).fetchone()
+        if existing is not None:
+            log.info("REJECT duplicate bill (fp=%s...) existing_id=%s",
+                     fp[:12], existing["id"])
+            raise DuplicateBillError(existing["id"], fp)
+
         conn = self._conn()
         cur = conn.execute(
             """INSERT INTO bills
                (chat_id, message_id, author_id, author_name, bill_type,
-                source, label, amount, currency, raw_text, image_path)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                source, label, amount, currency, raw_text, image_path, fingerprint)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (chat_id, message_id, author_id, author_name, bill_type,
-             source, label, amount, currency, raw_text, image_path),
+             source, label, amount, currency, raw_text, image_path, fp),
         )
         conn.commit()
         log.info("save_bill id=%s label=%r amount=%.2f", cur.lastrowid, label, amount)
