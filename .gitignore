@@ -45,3 +45,9 @@ config_test.ini
 *.session-shm
 *.session-wal
 *.session-journal
+
+# Runtime data — local SQLite memory + downloaded receipt photos
+# (recreated automatically by the bot; never commit personal data)
+data/
+gateway_state.json
+session/

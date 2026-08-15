@@ -1,0 +1,3 @@
+# Bill Noter bot — dependencies (separate from the main payment bot)
+# Uses python-telegram-bot, which does NOT conflict with pyrotgfork.
+python-telegram-bot>=20.0
