@@ -1,0 +1,21 @@
+[Unit]
+Description=Telegram Bill Noter — auto-heal supervisor (bot + gateway)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Path to the repo (adjust if cloned elsewhere)
+WorkingDirectory=/opt/telegram-bill-noter
+# The supervisor keeps the bot and gateway alive (<10s restart on crash)
+# and systemd restarts the supervisor itself if *it* ever dies.
+ExecStart=/usr/bin/python3 heal.py --all
+Restart=always
+RestartSec=5
+# Stop the whole process group so children die with the supervisor
+KillMode=control-group
+# Read tokens from .env (optional — the bot also reads it itself)
+EnvironmentFile=-/opt/telegram-bill-noter/.env
+
+[Install]
+WantedBy=multi-user.target

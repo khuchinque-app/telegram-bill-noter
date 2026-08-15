@@ -118,6 +118,9 @@ telegram-bill-noter/
 ├── data/                            # Runtime: SQLite AgentDB + OCR photos (gitignored)
 ├── docs/
 │   └── EMOTES.md                    # Emoji & emote language style guide
+├── heal.py                         # Auto-heal supervisor (crash + hang restart)
+├── deploy/
+│   └── telegram-bill-noter.service # systemd unit for production
 │
 ├── bill_noter/                      # Core Noter package
 │   ├── __init__.py
@@ -214,6 +217,50 @@ python bill_noter_bot.py --dry-run       # read messages from stdin, print notes
 ### 🎨 Emote language
 
 All bot replies use a fixed emoji vocabulary — see [`docs/EMOTES.md`](docs/EMOTES.md).
+
+---
+
+## 🛡️ Auto-Heal (`heal.py`)
+
+The server is protected by a built-in supervisor that keeps the bot and
+gateway alive **24/7**: if a process crashes or hangs, it is back up
+within seconds (default poll = **5s**, so restart happens in ~5s —
+well under 10s).
+
+### How it works
+1. **Crash detection** — the supervisor checks every `--poll` seconds;
+   a dead process is respawned immediately.
+2. **Hang detection** — the bot and gateway write a tiny heartbeat file
+   (`data/heartbeat/<name>`) every 10s. A heartbeat older than
+   `--stale-after` (default 30s) means the process is hung → it is
+   killed and restarted.
+3. **Crash-loop protection** — if a service dies within 10s of starting,
+   restarts back off exponentially (5s → 10s → … capped at 60s) so a
+   misconfigured service can't spin.
+4. **Logs** — every service's output goes to `logs/<name>.log`.
+
+### Run it
+```bash
+python heal.py               # supervise bot + gateway (default)
+python heal.py --bot         # bot only
+python heal.py --gateway     # gateway only
+python heal.py --poll 3      # faster crash detection (~3s)
+python heal.py --self-test   # offline verification of restart logic
+```
+
+### Production (systemd)
+For a real server, run the supervisor under systemd so even the
+supervisor itself is restarted if it ever dies:
+
+```bash
+sudo cp deploy/telegram-bill-noter.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now telegram-bill-noter
+```
+
+Adjust `WorkingDirectory` in the unit to your repo path. This gives
+two layers of protection: systemd restarts the supervisor, and the
+supervisor restarts the bot/gateway in ~5s.
 
 ---
 

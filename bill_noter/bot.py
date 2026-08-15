@@ -283,6 +283,15 @@ def main() -> None:
     global TOKEN, STORE_PATH
     TOKEN = token
     STORE_PATH = store_path
+
+    # Auto-heal heartbeat — lets `heal.py` detect hangs. Harmless if
+    # the supervisor is not running.
+    try:
+        from heal import start_heartbeat
+        start_heartbeat("bot", interval=10)
+    except Exception as exc:
+        log.warning("heartbeat unavailable: %s", exc)
+
     app = build_application()
     app.run_polling()
     log.info("STOP Bill Noter bot")

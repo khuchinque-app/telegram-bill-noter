@@ -51,3 +51,6 @@ config_test.ini
 data/
 gateway_state.json
 session/
+
+# Auto-heal supervisor logs (heal.py)
+logs/

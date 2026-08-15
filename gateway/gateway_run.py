@@ -110,6 +110,13 @@ def main() -> int:
     if args.self_test:
         return self_test(args.state)
 
+    # Auto-heal heartbeat — lets `heal.py` detect hangs.
+    try:
+        from heal import start_heartbeat
+        start_heartbeat("gateway", interval=10)
+    except Exception as exc:
+        logging.getLogger("gateway").warning("heartbeat unavailable: %s", exc)
+
     # Sandbox: default to pencatatbill2 if no chat given.
     chat = args.chat
     if args.sandbox and chat is None:
